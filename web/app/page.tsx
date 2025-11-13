@@ -5,27 +5,53 @@ import { Activity, TrendingUp, Users, Target, Bell, Search, Filter } from 'lucid
 import SignalsWall from '@/components/SignalsWall'
 import StatsCard from '@/components/StatsCard'
 import { fetchDashboardMetrics, fetchRecentSignals } from '@/lib/api'
+import logger from '@/lib/logger'
 
 export default function Dashboard() {
   const [metrics, setMetrics] = useState<any>(null)
   const [signals, setSignals] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    logger.logComponentMount('Dashboard')
     loadData()
+
+    return () => {
+      logger.logComponentUnmount('Dashboard')
+    }
   }, [])
 
   const loadData = async () => {
+    const startTime = performance.now()
+
     try {
+      logger.info('Loading dashboard data')
       setLoading(true)
+      setError(null)
+
       const [metricsData, signalsData] = await Promise.all([
         fetchDashboardMetrics(),
         fetchRecentSignals()
       ])
+
       setMetrics(metricsData)
       setSignals(signalsData)
+
+      const loadTime = performance.now() - startTime
+      logger.logPerformance('dashboard_load_time', loadTime)
+      logger.info('Dashboard data loaded successfully', {
+        metrics_count: Object.keys(metricsData).length,
+        signals_count: signalsData.length,
+        load_time_ms: Math.round(loadTime)
+      })
+
     } catch (error) {
-      console.error('Failed to load data:', error)
+      const loadTime = performance.now() - startTime
+      logger.error('Failed to load dashboard data', error as Error, {
+        load_time_ms: Math.round(loadTime)
+      })
+      setError('Failed to load dashboard data. Please try again.')
     } finally {
       setLoading(false)
     }

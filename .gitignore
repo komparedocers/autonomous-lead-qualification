@@ -15,7 +15,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -28,6 +27,10 @@ MANIFEST
 venv/
 ENV/
 env/
+
+# Ignore Python lib directories but not frontend lib
+**/python*/lib/
+services/*/lib/
 
 # Node.js
 node_modules/

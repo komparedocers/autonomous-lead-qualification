@@ -1,11 +1,12 @@
 """
 Main FastAPI application for Lead Qualification Platform
 """
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import structlog
+import sys
 from prometheus_client import make_asgi_app
 
 from config import settings
@@ -15,13 +16,22 @@ from services.kafka_service import kafka_producer
 from services.opensearch_service import opensearch_client
 from services.neo4j_service import neo4j_driver
 from services.minio_service import minio_client
+from middleware import RequestLoggingMiddleware, ErrorLoggingMiddleware
 
-# Configure structured logging
+# Configure comprehensive structured logging
 structlog.configure(
     processors=[
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
         structlog.processors.JSONRenderer()
-    ]
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    cache_logger_on_first_use=True,
 )
 
 logger = structlog.get_logger()
@@ -76,6 +86,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add logging middleware (first to catch all requests)
+app.add_middleware(ErrorLoggingMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -83,6 +97,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],  # Expose request ID to frontend
 )
 
 # Mount Prometheus metrics endpoint
@@ -156,12 +171,54 @@ async def health_check():
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    """Global exception handler"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler with comprehensive logging"""
+    request_id = getattr(request.state, "request_id", "unknown")
+
+    logger.error(
+        "global_exception_handler",
+        request_id=request_id,
+        method=request.method,
+        path=str(request.url),
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        client_host=request.client.host if request.client else "unknown",
+        exc_info=True
+    )
+
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal server error"}
+        content={
+            "detail": "Internal server error",
+            "request_id": request_id,
+            "error_type": type(exc).__name__
+        },
+        headers={"X-Request-ID": request_id}
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """HTTP exception handler with logging"""
+    request_id = getattr(request.state, "request_id", "unknown")
+
+    logger.warning(
+        "http_exception",
+        request_id=request_id,
+        method=request.method,
+        path=str(request.url),
+        status_code=exc.status_code,
+        detail=exc.detail,
+        client_host=request.client.host if request.client else "unknown"
+    )
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "request_id": request_id
+        },
+        headers={"X-Request-ID": request_id}
     )
 
 
